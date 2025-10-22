@@ -12,3 +12,5 @@ wheels/
 
 # Claude 文件
 CLAUDE.md
+
+.DS_Store
