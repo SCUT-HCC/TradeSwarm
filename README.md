@@ -2,80 +2,96 @@
 
 ## 项目概述
 
-TradeSwarm是一个基于多智能体协作的量化交易系统，采用多线程并行Pipeline架构设计。系统通过专业化的信息处理Agent和研究分析Agent协同工作，最终由交易决策Agent生成交易指令。整个交易决策流程由多条并行Pipeline组成，每条Pipeline内部实际上就是一个完整的Agent工作流(workflow)，通过多个Agent之间的协作完成特定的信息处理或决策任务。
+TradeSwarm是一个基于多智能体协作的量化交易系统，采用完全并行的Pipeline架构设计。系统包含6个独立的Pipeline，所有Pipeline同时启动并行运行，通过SQLite数据库实现解耦通信。每条Pipeline内部是一个完整的Agent工作流(Workflow)，通过多个Agent的顺序协作完成特定的信息处理或决策任务。
 
 ## 核心特性
 
-- **多线程并行Pipeline架构**：四条信息处理Pipeline并行运行，高效处理市场数据、社交媒体、新闻报道和基本面信息
-- **专业化Agent分工**：每个Agent专注特定领域，通过协作形成完整的交易决策链
-- **迭代优化机制**：Research Team通过多轮迭代分析Bullish/Bearish信号，不断优化投资建议
-- **风险管理集成**：交易决策过程内置Risk Officer进行风险评估，确保交易安全性
-- **异步执行框架**：基于asyncio实现真正的并发执行，支持大规模Agent并行调度
+- **完全并行Pipeline架构**：6个Pipeline同时启动并行运行，通过SQLite数据库解耦通信
+- **数据库驱动解耦**：Pipeline间零直接依赖，通过轮询数据库实现数据共享和协调
+- **专业化Agent分工**：每个Agent专注特定领域，Pipeline内部通过顺序Workflow协作
+- **迭代优化机制**：Research Pipeline内部通过Bullish/Bearish Agent多轮迭代优化投资建议
+- **风险管理集成**：Trading Pipeline内置Trader/Risk Officer/Manager三阶段决策流程
+- **异步执行框架**：基于asyncio实现真正的并发执行，所有Pipeline同时运行
 
 ## 系统架构
 
 ### Pipeline设计
 
-系统采用分层Pipeline架构，信息从底层采集到顶层决策逐级流转：
+系统包含6个完全并行运行的Pipeline，通过SQLite数据库实现解耦通信。所有Pipeline同时启动，需要前置数据的Pipeline通过轮询数据库等待数据就绪。
 
 ![workflow](./docs/access/Workflow.png)
 
-### Agent职责分工
+### Pipeline解耦机制
 
-#### Layer 1: 信息采集Agent
+**并行执行模式**：
+所有Pipeline通过`asyncio.gather()`同时启动并行运行，不存在层级执行顺序。系统启动时6个Pipeline完全并发，各自独立执行。
 
-**四个并行Pipeline独立运行，各自处理特定类型的市场信息**
+**数据通信机制**：
+- Pipeline间通过SQLite数据库完全解耦，零直接调用
+- 每个Pipeline将输出写入`pipeline_outputs`表
+- 需要前置数据的Pipeline主动轮询数据库，等待所需数据就绪
+- 使用`session_id`关联同一决策周期的所有数据
 
-1. **Market Agent** (Pipeline 1)
-   - 处理实时市场数据、价格走势、成交量等技术指标
-   - 输出：技术分析报告
+**Pipeline内部结构**：
+每个Pipeline是一个顺序执行的Workflow，包含多个Agent的串行工作流程。例如Research Pipeline内部流程：
+1. 轮询数据库等待4个数据源就绪（market/social/news/fundamentals）
+2. Bullish Agent分析看涨信号
+3. Bearish Agent分析看跌信号
+4. 两个Agent迭代优化分析结论
+5. 将最终报告写入数据库供Trading Pipeline使用
 
-2. **Social Apps Agent** (Pipeline 2)
-   - 监控社交媒体舆情、投资者情绪、热点话题
-   - 输出：情绪分析报告
+### Pipeline与Agent职责分工
 
-3. **News Report Agent** (Pipeline 3)
-   - 分析财经新闻、行业动态、政策变化
-   - 输出：新闻摘要与影响评估
+为便于理解，将6个Pipeline按功能分为三组（注意：这只是逻辑分组，实际执行时所有Pipeline完全并行）：
 
-4. **Fundamentals Agent** (Pipeline 4)
-   - 评估公司基本面、财务数据、行业地位
-   - 输出：基本面分析报告
+#### 信息采集Pipeline组（4个并行Pipeline）
 
-#### Layer 2: 研究分析Agent
+所有信息采集Pipeline同时启动，独立处理各自数据源，将分析结果写入数据库。
 
-**Research Team (Pipeline 5) - 迭代优化机制**
+**Pipeline 1: Market Pipeline**
+- 包含Agent：Market Agent
+- 职责：处理实时市场数据、价格走势、成交量等技术指标
+- 数据库输出：`market_analysis`类型的分析报告
 
-5. **Bullish Analyst Agent**
-   - 综合Layer 1的四份报告，识别看涨信号
-   - 分析上涨潜力、支撑位、催化剂因素
-   - 输出：看涨论证报告
+**Pipeline 2: Social Pipeline**
+- 包含Agent：Social Apps Agent
+- 职责：监控社交媒体舆情、投资者情绪、热点话题
+- 数据库输出：`social_analysis`类型的情绪分析报告
 
-6. **Bearish Analyst Agent**
-   - 综合Layer 1的四份报告，识别看跌信号
-   - 分析下跌风险、阻力位、负面因素
-   - 输出：看跌论证报告
+**Pipeline 3: News Pipeline**
+- 包含Agent：News Report Agent
+- 职责：分析财经新闻、行业动态、政策变化
+- 数据库输出：`news_analysis`类型的新闻摘要与影响评估
 
-**迭代流程**：两个分析Agent相互审视对方报告，通过多轮循环优化分析结论，直到达到收敛条件或最大迭代次数。
+**Pipeline 4: Fundamentals Pipeline**
+- 包含Agent：Fundamentals Agent
+- 职责：评估公司基本面、财务数据、行业地位
+- 数据库输出：`fundamentals_analysis`类型的基本面分析报告
 
-#### Layer 3: 交易决策Agent
+#### 研究分析Pipeline（1个Pipeline，内部迭代Workflow）
 
-**Trading Team (Pipeline 6) - 决策生成机制**
+**Pipeline 5: Research Pipeline**
+- 包含Agent：Bullish Analyst Agent + Bearish Analyst Agent
+- 数据依赖：从数据库查询上述4类分析报告（`market_analysis`, `social_analysis`, `news_analysis`, `fundamentals_analysis`）
+- 内部Workflow：
+  1. 轮询数据库等待4个数据源就绪
+  2. Bullish Agent识别看涨信号，分析上涨潜力、支撑位、催化剂
+  3. Bearish Agent识别看跌信号，分析下跌风险、阻力位、负面因素
+  4. 两个Agent相互审视对方报告，迭代优化分析结论
+  5. 达到收敛条件或最大迭代次数后终止
+- 数据库输出：`research_report`类型的综合投资建议
 
-7. **Trader Agent**
-   - 基于Research Team的分析结果制定交易策略
-   - 生成具体交易指令（买入/卖出/持有、数量、价格）
-   - 输出：交易指令草案
+#### 交易决策Pipeline（1个Pipeline，内部三阶段Workflow）
 
-8. **Risk Officer Agent**
-   - 评估交易指令的风险敞口、资金管理、止损止盈
-   - 识别潜在风险点并提出调整建议
-   - 输出：风险评估报告
-
-9. **Manager Agent**
-   - 整合Trader和Risk Officer的意见
-   - 做出最终交易决定并执行
-   - 输出：最终交易决策
+**Pipeline 6: Trading Pipeline**
+- 包含Agent：Trader Agent + Risk Officer Agent + Manager Agent
+- 数据依赖：从数据库查询`research_report`
+- 内部Workflow：
+  1. 轮询数据库等待Research Pipeline的输出
+  2. Trader Agent制定交易策略，生成交易指令草案
+  3. Risk Officer Agent评估风险敞口、资金管理、止损止盈
+  4. Manager Agent整合意见，做出最终交易决定
+- 数据库输出：`trading_decision`类型的最终交易决策
 
 ### 核心组件
 
@@ -87,17 +103,18 @@ TradeSwarm/
 │   │   ├── config_validator.py    # 配置验证器
 │   │   └── prompt_manager.py      # Prompt模板管理器
 │   │
-│   ├── agent_pool/                # Agent池管理
-│   │   ├── agent_pool.py          # AgentPool（并发调度+限流）
-│   │   └── types.py               # 数据结构定义
-│   │
 │   ├── pipelines/                 # Pipeline工作流（待实现）
-│   │   ├── layer1_market.py       # Market数据处理Pipeline
-│   │   ├── layer1_social.py       # Social媒体分析Pipeline
-│   │   ├── layer1_news.py         # News报道分析Pipeline
-│   │   ├── layer1_fundamentals.py # Fundamentals分析Pipeline
-│   │   ├── layer2_research.py     # Research迭代分析Pipeline
-│   │   └── layer3_trading.py      # Trading决策生成Pipeline
+│   │   ├── base_pipeline.py       # BasePipeline基类（解耦机制）
+│   │   ├── market_pipeline.py     # Market数据处理Pipeline
+│   │   ├── social_pipeline.py     # Social媒体分析Pipeline
+│   │   ├── news_pipeline.py       # News报道分析Pipeline
+│   │   ├── fundamentals_pipeline.py # Fundamentals分析Pipeline
+│   │   ├── research_pipeline.py   # Research迭代分析Pipeline
+│   │   └── trading_pipeline.py    # Trading决策生成Pipeline
+│   │
+│   ├── storage/                   # 数据存储（待实现）
+│   │   ├── database.py            # DatabaseManager（SQLite管理）
+│   │   └── schema.py              # 数据库表结构定义
 │   │
 │   └── __init__.py                # 核心模块导出
 │
@@ -112,15 +129,15 @@ TradeSwarm/
 │
 ├── configs/                       # Agent配置文件（待实现）
 │   └── trading_agents/            # 交易Agent配置
-│       ├── layer1_market.json          # Market Agent配置
-│       ├── layer1_social.json          # Social Apps Agent配置
-│       ├── layer1_news.json            # News Report Agent配置
-│       ├── layer1_fundamentals.json    # Fundamentals Agent配置
-│       ├── layer2_bullish.json         # Bullish Analyst配置
-│       ├── layer2_bearish.json         # Bearish Analyst配置
-│       ├── layer3_trader.json          # Trader Agent配置
-│       ├── layer3_risk.json            # Risk Officer配置
-│       └── layer3_manager.json         # Manager Agent配置
+│       ├── market_agent.json           # Market Agent配置
+│       ├── social_agent.json           # Social Apps Agent配置
+│       ├── news_agent.json             # News Report Agent配置
+│       ├── fundamentals_agent.json     # Fundamentals Agent配置
+│       ├── bullish_agent.json          # Bullish Analyst配置
+│       ├── bearish_agent.json          # Bearish Analyst配置
+│       ├── trader_agent.json           # Trader Agent配置
+│       ├── risk_agent.json             # Risk Officer配置
+│       └── manager_agent.json          # Manager Agent配置
 │
 ├── main.py                        # 主程序入口
 ├── README.md                      # 项目文档
@@ -129,12 +146,14 @@ TradeSwarm/
 
 ### 设计原则
 
-- **专业化分工**：每个Agent专注特定领域，避免职责混淆
-- **并行处理**：Layer 1的四个Agent完全并行运行，最大化信息处理效率
-- **迭代优化**：Research Team通过多轮讨论优化分析质量
-- **风险优先**：Trading Team将风险管理嵌入决策流程
-- **可观测性**：完整记录Agent交互日志，支持决策过程追溯
-- **容错机制**：单个Agent失败不影响整体系统运行（优雅降级）
+- **完全解耦**：Pipeline间通过数据库通信，零直接依赖，易于扩展和维护
+- **并行优先**：所有Pipeline同时启动，最大化系统吞吐量和响应速度
+- **专业化分工**：每个Agent专注特定领域，Pipeline内部通过Workflow协作
+- **数据驱动**：Pipeline通过轮询数据库获取所需数据，自动等待前置任务完成
+- **迭代优化**：Research Pipeline内部通过多轮Agent迭代提升分析质量
+- **风险优先**：Trading Pipeline内置三阶段决策流程，确保风险管理
+- **可观测性**：完整记录Pipeline执行和Agent交互日志，支持决策追溯
+- **容错机制**：单个Pipeline失败不影响其他Pipeline运行（优雅降级）
 
 ## 技术实现
 
@@ -146,19 +165,26 @@ TradeSwarm/
 2. **Planning阶段**：基于observation进行Chain-of-Thought推理，制定执行计划
 3. **Acting阶段**：根据plan执行具体操作，调用工具并整合结果
 
-### 并发执行与限流
+### Pipeline并行执行与数据库解耦
 
-**AgentPool并发管理**：
-- 基于asyncio实现异步并发执行
-- 双层限流控制：
-  - Semaphore控制最大并发槽位数
-  - RateLimiter（令牌桶算法）控制API调用速率
-- 支持异构Agent注册和批量执行
+**Pipeline并行启动**：
+```python
+# 所有Pipeline通过asyncio.gather()同时启动
+await asyncio.gather(
+    MarketPipeline(db, session_id).run(),
+    SocialPipeline(db, session_id).run(),
+    NewsPipeline(db, session_id).run(),
+    FundamentalsPipeline(db, session_id).run(),
+    ResearchPipeline(db, session_id).run(),
+    TradingPipeline(db, session_id).run()
+)
+```
 
-**执行模式**：
-- 同步执行：`agent.run()` - 适用于单Agent调试
-- 异步执行：`agent.async_run()` - 适用于并行场景
-- 批量执行：`agent_pool.execute_all()` - 适用于大规模Agent调度
+**数据库驱动协调**：
+- 每个Pipeline将输出写入SQLite的`pipeline_outputs`表
+- 需要数据的Pipeline轮询数据库等待所需数据就绪
+- 使用`session_id`关联同一决策周期的所有数据
+- 通过写队列避免SQLite并发写冲突
 
 ### 工具系统
 
@@ -177,6 +203,7 @@ TradeSwarm/
 | **Agent框架** | CAMEL | 多Agent协作框架 |
 | **LLM接口** | 阿里百联API | 兼容OpenAI格式，通过环境变量配置 |
 | **并发机制** | asyncio | Python标准异步执行框架 |
+| **数据存储** | SQLite + aiosqlite | 轻量级数据库，Pipeline解耦通信 |
 | **日志系统** | logging | Python标准日志库 |
 | **依赖管理** | uv | 快速Python包管理器 |
 
@@ -209,6 +236,9 @@ sudo apt install rustc cargo
 
 # 安装 camel-ai 及其所有依赖，如果时间不够还可以增加时间
 UV_HTTP_TIMEOUT=900 uv pip install 'camel-ai[all]'
+
+# 安装异步SQLite库（Pipeline解耦所需）
+uv pip install aiosqlite
 ```
 
 #### 环境变量配置
@@ -233,20 +263,22 @@ ALIBABA_MODEL_POWERFUL=qwen-max     # 复杂任务使用
 ### 运行示例
 
 ```bash
-# 运行Agent池并行执行演示
+# 运行完整的Pipeline并行执行演示
 python main.py
 ```
 
 ## 开发路线图
 
-- [x] 核心框架实现（BaseAgent + AgentPool）
+- [x] 核心框架实现（BaseAgent三阶段执行框架）
 - [x] 工具系统与配置管理
-- [ ] Layer 1: 四个信息采集Agent配置
-- [ ] Layer 2: Research Team迭代机制
-- [ ] Layer 3: Trading Team决策流程
+- [ ] SQLite数据库模块（DatabaseManager + Schema）
+- [ ] BasePipeline基类（数据库解耦机制）
+- [ ] 信息采集Pipeline组（Market/Social/News/Fundamentals）
+- [ ] Research Pipeline（Bullish/Bearish迭代机制）
+- [ ] Trading Pipeline（Trader/Risk/Manager决策流程）
 - [ ] 数据接口集成（市场数据、新闻源等）
+- [ ] Pipeline监控与日志分析
 - [ ] 回测系统
-- [ ] 性能监控与日志分析
 - [ ] 风险控制优化
 
 ## 研究规范
