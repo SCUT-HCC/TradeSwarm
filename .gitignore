@@ -213,3 +213,4 @@ yarn-error.log*
 CLAUDE.md
 **/*讨论内容.md
 data/
+.serena/
