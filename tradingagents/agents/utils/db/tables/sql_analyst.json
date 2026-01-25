@@ -1,0 +1,8 @@
+{
+    "id": "主键",
+    "analyst_type": "分析师类型",
+    "symbol": "股票代码",
+    "trade_date": "交易日期",
+    "report_content": "报告内容",
+    "created_at": "创建时间"
+}

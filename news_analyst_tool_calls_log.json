@@ -1,0 +1,34 @@
+{
+  "summary": {
+    "tool_calls": 2,
+    "tool_results": 2,
+    "llm_calls": 3,
+    "tools_used": [
+      "get_news",
+      "get_global_news"
+    ]
+  },
+  "tool_calls": [
+    {
+      "name": "get_news",
+      "input": "{'ts_code': '000001', 'days': 7, 'limit': 10}",
+      "timestamp": "a53680e2-c2ed-4a26-9128-9d9e56787fc3"
+    },
+    {
+      "name": "get_global_news",
+      "input": "{'days': 7, 'limit': 10}",
+      "timestamp": "7d1df1c1-0a37-4386-b22b-68b8ac9ce7df"
+    }
+  ],
+  "tool_results": [
+    {
+      "name": "get_news",
+      "output_length": 447
+    },
+    {
+      "name": "get_global_news",
+      "output_length": 589
+    }
+  ],
+  "final_report_length": 1005
+}

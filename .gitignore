@@ -173,6 +173,9 @@ tmp/
 test_output/
 *.tmp
 
+# Test directory
+test/
+
 # Research output and reports
 research_output/
 reports/
@@ -213,3 +216,4 @@ yarn-error.log*
 CLAUDE.md
 **/*讨论内容.md
 data/
+.cursorrules

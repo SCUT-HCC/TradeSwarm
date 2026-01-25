@@ -1,0 +1,78 @@
+{
+  "diagnosis_time": "2025-12-11 16:09:33",
+  "ts_code": "000001",
+  "query_date_range": {
+    "start": "20251201",
+    "end": "20251211"
+  },
+  "latest_trade_date": "20251211",
+  "latest_close_price": 11.37,
+  "is_today": true,
+  "recent_5_days": [
+    {
+      "ts_code": "000001.SZ",
+      "trade_date": "20251205",
+      "open": 11.49,
+      "high": 11.54,
+      "low": 11.4,
+      "close": 11.53,
+      "pre_close": 11.49,
+      "change": 0.04,
+      "pct_chg": 0.3481,
+      "vol": 890766.09,
+      "amount": 1022334.912
+    },
+    {
+      "ts_code": "000001.SZ",
+      "trade_date": "20251208",
+      "open": 11.49,
+      "high": 11.6,
+      "low": 11.48,
+      "close": 11.52,
+      "pre_close": 11.53,
+      "change": -0.01,
+      "pct_chg": -0.0867,
+      "vol": 855898.93,
+      "amount": 988510.035
+    },
+    {
+      "ts_code": "000001.SZ",
+      "trade_date": "20251209",
+      "open": 11.52,
+      "high": 11.54,
+      "low": 11.43,
+      "close": 11.43,
+      "pre_close": 11.52,
+      "change": -0.09,
+      "pct_chg": -0.7813,
+      "vol": 733957.45,
+      "amount": 842732.358
+    },
+    {
+      "ts_code": "000001.SZ",
+      "trade_date": "20251210",
+      "open": 11.44,
+      "high": 11.46,
+      "low": 11.29,
+      "close": 11.33,
+      "pre_close": 11.43,
+      "change": -0.1,
+      "pct_chg": -0.8749,
+      "vol": 1044064.72,
+      "amount": 1184087.688
+    },
+    {
+      "ts_code": "000001.SZ",
+      "trade_date": "20251211",
+      "open": 11.35,
+      "high": 11.39,
+      "low": 11.3,
+      "close": 11.37,
+      "pre_close": 11.33,
+      "change": 0.04,
+      "pct_chg": 0.353,
+      "vol": 925261.29,
+      "amount": 1049906.216
+    }
+  ]
+}
