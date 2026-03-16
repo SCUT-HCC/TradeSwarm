@@ -2,9 +2,9 @@
 import json
 import re
 from typing import Optional
+import pandas as pd
 from langchain_core.tools import tool
-from datasources.data_sources.tushare_provider import TushareProvider
-from datasources.data_sources.akshare_provider import AkshareProvider
+from datasources.data_sources.alphavantage_provider import AlphaVantageProvider
 from utils.data_utils import normalize_stock_code
 from utils.config_loader import load_config
 
@@ -56,42 +56,30 @@ def _pick_fields(row: dict, fields: list, alias: dict = None):
 
 
 # 全局 Provider 实例（懒加载）
-_tushare_provider: Optional[TushareProvider] = None
-_akshare_provider: Optional[AkshareProvider] = None
+_alphavantage_provider: Optional[AlphaVantageProvider] = None
 
 
-def _get_tushare_provider() -> TushareProvider:
-    """获取 Tushare Provider 实例（单例模式）"""
-    global _tushare_provider
-    if _tushare_provider is None:
+def _get_alphavantage_provider() -> AlphaVantageProvider:
+    """获取 Alpha Vantage Provider 实例（单例模式）"""
+    global _alphavantage_provider
+    if _alphavantage_provider is None:
         config = load_config()
-        _tushare_provider = TushareProvider(config)
-    return _tushare_provider
-
-
-def _get_akshare_provider() -> AkshareProvider:
-    """获取 AkShare Provider 实例（单例模式）"""
-    global _akshare_provider
-    if _akshare_provider is None:
-        config = load_config()
-        _akshare_provider = AkshareProvider(config)
-    return _akshare_provider
+        _alphavantage_provider = AlphaVantageProvider(config)
+    return _alphavantage_provider
 
 
 @tool
-def get_company_info(ts_code: str) -> str:
+def get_company_info(symbol: str) -> str:
     """
-    获取公司基本信息
+    获取公司基本信息（使用 Alpha Vantage API）
     
     此工具用于获取指定股票代码的公司基本信息，包括公司名称、所属行业、上市日期、股本等。
-    优先使用 AkShare 获取公司信息，失败时使用 Tushare 作为备选。
     
     Args:
-        ts_code: 股票代码，支持以下格式：
-            - '000001' (6位数字，会自动识别市场)
-            - '000001.SZ' (深圳市场)
-            - '600000.SH' (上海市场)
-            示例：'000001' 或 '600000'
+        symbol: 股票代码，yfinance格式：
+            - 美股：'AAPL', 'MSFT', 'GOOGL' 等
+            - A股：'000001.SZ' (深圳), '600519.SS' (上海)
+            示例：'AAPL' 或 '000001.SZ' 或 '600519.SS'
     
     Returns:
         JSON 格式的字符串，包含以下字段：
@@ -110,53 +98,41 @@ def get_company_info(ts_code: str) -> str:
         '{"success": true, "data": {...}, "summary": {...}}'
     """
     try:
-        # 首先尝试使用 AkShare
-        try:
-            ak_provider = _get_akshare_provider()
-            result = ak_provider.get_company_info(ts_code)
-            
-            if "error" in result:
-                raise Exception(result["error"])
-            
-            return json.dumps({
-                "success": True,
-                "message": f"成功从 AkShare 获取股票 {ts_code} 的公司信息",
-                "data": result,
-                "summary": {
-                    "data_source": "akshare",
-                    "symbol": result.get("symbol", ts_code)
-                }
-            }, ensure_ascii=False, indent=2, default=str)
-            
-        except Exception as ak_error:
-            # AkShare 失败，尝试使用 Tushare 作为备选
-            try:
-                tushare_provider = _get_tushare_provider()
-                result = tushare_provider.get_company_info(ts_code)
-                
-                if "error" in result:
-                    raise Exception(result["error"])
-                
-                return json.dumps({
-                    "success": True,
-                    "message": f"成功从 Tushare 获取股票 {ts_code} 的公司信息（AkShare 失败，已使用备选数据源）",
-                    "data": result,
-                    "summary": {
-                        "data_source": "tushare",
-                        "symbol": result.get("symbol", ts_code)
-                    }
-                }, ensure_ascii=False, indent=2, default=str)
-                
-            except Exception as tushare_error:
-                return json.dumps({
-                    "success": False,
-                    "message": f"获取公司信息失败。AkShare 错误: {str(ak_error)[:100]}。Tushare 错误: {str(tushare_error)[:100]}。",
-                    "data": {},
-                    "summary": {
-                        "data_source": "error",
-                        "symbol": ts_code
-                    }
-                }, ensure_ascii=False, indent=2)
+        from datetime import datetime
+        
+        av_provider = _get_alphavantage_provider()
+        result = av_provider.get_company_info(symbol)
+        
+        # 补充缺失字段，确保与 dev/zcx 格式兼容
+        data = {
+            "ts_code": result.get("symbol", symbol),  # 股票代码
+            "name": result.get("name", ""),  # 公司名称
+            "area": result.get("country", ""),  # 国家/地区（如果 API 提供）
+            "industry": result.get("industry", result.get("sector", "")),  # 行业
+            "market": result.get("exchange", ""),  # 交易所
+            "list_date": result.get("latest_quarter", ""),  # 最新季度（作为上市日期近似值）
+            "total_share": result.get("shares_outstanding", ""),  # 总股本（如果 API 提供）
+            "float_share": result.get("shares_outstanding", ""),  # 流通股本（如果 API 提供）
+            # 保留原有字段
+            "symbol": result.get("symbol", symbol),
+            "sector": result.get("sector", ""),
+            "marketCap": result.get("marketCap", ""),
+            "currency": result.get("currency", ""),
+            "exchange": result.get("exchange", ""),
+            "website": result.get("website", ""),
+            "description": result.get("description", ""),
+        }
+        
+        return json.dumps({
+            "success": True,
+            "message": f"成功从 Alpha Vantage 获取股票 {symbol} 的公司信息",
+            "data": data,
+            "summary": {
+                "data_source": "alphavantage",
+                "symbol": result.get("symbol", symbol),
+                "update_time": datetime.now().strftime("%Y-%m-%d")  # 添加更新时间
+            }
+        }, ensure_ascii=False, indent=2, default=str)
     
     except Exception as e:
         return json.dumps({
@@ -169,7 +145,7 @@ def get_company_info(ts_code: str) -> str:
 
 @tool
 def get_financial_statements(
-    ts_code: str,
+    symbol: str,
     report_type: Optional[str] = "annual",
     periods: Optional[int] = 4
 ) -> str:
@@ -177,13 +153,12 @@ def get_financial_statements(
     获取三大财务报表（利润表、资产负债表、现金流量表）
     
     此工具用于获取指定股票的三大财务报表数据，支持年度和季度报告。
-    优先使用 AkShare 获取财务报表，失败时使用 Tushare 作为备选。
+    使用 Alpha Vantage API 获取数据。
     
     Args:
-        ts_code: 股票代码，支持以下格式：
-            - '000001' (6位数字)
-            - '000001.SZ' (深圳市场)
-            - '600000.SH' (上海市场)
+        symbol: 股票代码，yfinance格式：
+            - 美股：'AAPL', 'MSFT', 'GOOGL' 等
+            - A股：'000001.SZ' (深圳), '600519.SS' (上海)
         report_type: 报告类型，可选值：
             - 'annual': 年度报告（默认）
             - 'quarter': 季度报告
@@ -209,53 +184,54 @@ def get_financial_statements(
         if report_type not in ["annual", "quarter"]:
             report_type = "annual"
 
-        tushare_provider = _get_tushare_provider()
-        ts_code_normalized = normalize_stock_code(ts_code)
+        av_provider = _get_alphavantage_provider()
+        statements = av_provider.get_financial_statements(symbol, statement_type="all")
         
-        income_df = tushare_provider.get_income(ts_code_normalized)
-        balance_df = tushare_provider.get_balancesheet(ts_code_normalized)
-        cashflow_df = tushare_provider.get_cashflow(ts_code_normalized)
+        income_df = statements.get('income', pd.DataFrame())
+        balance_df = statements.get('balance', pd.DataFrame())
+        cashflow_df = statements.get('cashflow', pd.DataFrame())
 
         # 核心字段提取（最新一条）
         income_row = _get_latest_row(income_df)
         balance_row = _get_latest_row(balance_df)
         cashflow_row = _get_latest_row(cashflow_df)
 
+        # Alpha Vantage 字段名映射
         income_core = _pick_fields(
             income_row,
             [
-                "ann_date",
-                "end_date",
-                "revenue",
-                "total_revenue",
-                "operate_profit",
-                "n_income",
-                "basic_eps",
+                "fiscalDateEnding",
+                "reportedCurrency",
+                "totalRevenue",
+                "grossProfit",
+                "operatingIncome",
+                "netIncome",
+                "basicEPS",
             ],
         )
 
         balance_core = _pick_fields(
             balance_row,
             [
-                "ann_date",
-                "end_date",
-                "total_assets",
-                "total_liab",
-                "total_hldr_eqy_exc_min_int",
-                "depos",
-                "loanto_oth_bank_fi",
+                "fiscalDateEnding",
+                "reportedCurrency",
+                "totalAssets",
+                "totalLiabilities",
+                "totalShareholderEquity",
+                "cashAndCashEquivalentsAtCarryingValue",
+                "shortTermInvestments",
             ],
         )
 
         cashflow_core = _pick_fields(
             cashflow_row,
             [
-                "ann_date",
-                "end_date",
-                "n_cashflow_act",
-                "n_cashflow_inv_act",
-                "n_cash_flows_fnc_act",
-                "n_incr_cash_cash_equ",
+                "fiscalDateEnding",
+                "reportedCurrency",
+                "operatingCashflow",
+                "cashflowFromInvestment",
+                "cashflowFromFinancing",
+                "changeInCashAndCashEquivalents",
             ],
         )
 
@@ -264,7 +240,7 @@ def get_financial_statements(
         cashflow_preview, cashflow_meta = _df_to_preview(cashflow_df, limit=periods or 5)
 
         result = {
-            "symbol": ts_code_normalized,
+            "symbol": symbol,
             "report_type": report_type,
             "income": income_preview,
             "balance": balance_preview,
@@ -291,11 +267,11 @@ def get_financial_statements(
         
         return json.dumps({
             "success": True,
-            "message": f"成功从 Tushare 获取股票 {ts_code} 的财务报表",
+            "message": f"成功从 Alpha Vantage 获取股票 {symbol} 的财务报表",
             "data": result,
             "summary": {
-                "data_source": "tushare",
-                "symbol": ts_code_normalized,
+                "data_source": "alphavantage",
+                "symbol": symbol,
                 "report_type": report_type,
                 "periods": periods
             }
@@ -312,7 +288,7 @@ def get_financial_statements(
 
 @tool
 def get_financial_indicators(
-    ts_code: str,
+    symbol: str,
     report_type: Optional[str] = "annual",
     periods: Optional[int] = 4
 ) -> str:
@@ -320,13 +296,12 @@ def get_financial_indicators(
     获取财务指标（ROE、ROA、毛利率、净利率等）
     
     此工具用于获取指定股票的财务分析指标，包括盈利能力、成长能力、偿债能力等指标。
-    优先使用 AkShare 获取财务指标，失败时使用 Tushare 作为备选。
+    使用 Alpha Vantage API 获取数据。
     
     Args:
-        ts_code: 股票代码，支持以下格式：
-            - '000001' (6位数字)
-            - '000001.SZ' (深圳市场)
-            - '600000.SH' (上海市场)
+        symbol: 股票代码，yfinance格式：
+            - 美股：'AAPL', 'MSFT', 'GOOGL' 等
+            - A股：'000001.SZ' (深圳), '600519.SS' (上海)
         report_type: 报告类型，可选值：
             - 'annual': 年度报告（默认）
             - 'quarter': 季度报告
@@ -347,53 +322,48 @@ def get_financial_indicators(
         if report_type not in ["annual", "quarter"]:
             report_type = "annual"
 
-        tushare_provider = _get_tushare_provider()
-        ts_code_normalized = normalize_stock_code(ts_code)
-        df = tushare_provider.get_fina_indicator(ts_code_normalized)
+        av_provider = _get_alphavantage_provider()
+        df = av_provider.get_financial_indicators(symbol)
+        
         preview, meta = _df_to_preview(df, limit=periods or 5)
 
         latest = _get_latest_row(df)
+        # Alpha Vantage 字段名
         core = _pick_fields(
             latest,
             [
-                "ann_date",
-                "end_date",
+                "symbol",
+                "pe_ratio",
+                "peg_ratio",
                 "eps",
-                "dt_eps",
+                "dividend_yield",
                 "roe",
-                "roe_dt",
-                "netprofit_margin",
-                "debt_to_assets",
-                "assets_to_eqt",
-                "bps",
-                "ocfps",
-                "q_sales_yoy",
-                "q_op_qoq",
-                "equity_yoy",
+                "roa",
+                "profit_margin",
             ],
         )
 
         if preview is None:
             return json.dumps({
                 "success": False,
-                "message": "Tushare 财务指标数据为空",
+                "message": "Alpha Vantage 财务指标数据为空",
                 "data": {},
-                "summary": {"data_source": "tushare", "symbol": ts_code_normalized}
+                "summary": {"data_source": "alphavantage", "symbol": symbol}
             }, ensure_ascii=False, indent=2)
 
         return json.dumps({
             "success": True,
-            "message": f"成功从 Tushare 获取股票 {ts_code} 的财务指标",
+            "message": f"成功从 Alpha Vantage 获取股票 {symbol} 的财务指标",
             "data": {
-                "symbol": ts_code_normalized,
+                "symbol": symbol,
                 "report_type": report_type,
                 "data": preview,
                 "meta": meta,
                 "core": core
             },
             "summary": {
-                "data_source": "tushare",
-                "symbol": ts_code_normalized,
+                "data_source": "alphavantage",
+                "symbol": symbol,
                 "report_type": report_type,
                 "periods": periods
             }
@@ -410,7 +380,7 @@ def get_financial_indicators(
 
 @tool
 def get_valuation_indicators(
-    ts_code: str,
+    symbol: str,
     include_market_comparison: Optional[bool] = True
 ) -> str:
     """
@@ -418,13 +388,12 @@ def get_valuation_indicators(
     
     此工具用于获取指定股票的估值指标，包括市盈率（PE）、市净率（PB）、市销率（PS）、股息率等。
     可选包含市场/行业对比数据。
-    优先使用 AkShare 获取估值指标，失败时使用 Tushare 作为备选。
+    使用 Alpha Vantage API 获取数据。
     
     Args:
-        ts_code: 股票代码，支持以下格式：
-            - '000001' (6位数字)
-            - '000001.SZ' (深圳市场)
-            - '600000.SH' (上海市场)
+        symbol: 股票代码，yfinance格式：
+            - 美股：'AAPL', 'MSFT', 'GOOGL' 等
+            - A股：'000001.SZ' (深圳), '600519.SS' (上海)
         include_market_comparison: 是否包含市场/行业对比（默认 True）
     
     Returns:
@@ -442,40 +411,40 @@ def get_valuation_indicators(
         '{"success": true, "data": {...}, "summary": {...}}'
     """
     try:
-        tushare_provider = _get_tushare_provider()
-        ts_code_normalized = normalize_stock_code(ts_code)
+        av_provider = _get_alphavantage_provider()
+        df = av_provider.get_valuation_metrics(symbol)
         
-        df = tushare_provider.get_daily_basic(ts_code_normalized)
         preview, meta = _df_to_preview(df, limit=1)
         latest = _get_latest_row(df)
+        
+        # Alpha Vantage 字段名
         core = _pick_fields(
             latest,
             [
-                "trade_date",
-                "close",
-                "pe",
-                "pe_ttm",
-                "pb",
-                "ps",
-                "ps_ttm",
-                "total_mv",
-                "circ_mv",
+                "symbol",
+                "market_cap",
+                "pe_ratio",
+                "peg_ratio",
+                "price_to_book",
+                "price_to_sales",
+                "ev_to_ebitda",
+                "dividend_yield",
             ],
         )
 
         if preview is None:
             return json.dumps({
                 "success": False,
-                "message": "Tushare 估值指标数据为空",
+                "message": "Alpha Vantage 估值指标数据为空",
                 "data": {},
-                "summary": {"data_source": "tushare", "symbol": ts_code_normalized}
+                "summary": {"data_source": "alphavantage", "symbol": symbol}
             }, ensure_ascii=False, indent=2)
         
         return json.dumps({
             "success": True,
-            "message": f"成功从 Tushare 获取股票 {ts_code} 的估值指标",
+            "message": f"成功从 Alpha Vantage 获取股票 {symbol} 的估值指标",
             "data": {
-                "symbol": ts_code_normalized,
+                "symbol": symbol,
                 "pe_pb": preview,
                 "dividend": None,
                 "market_comparison": None,
@@ -484,8 +453,8 @@ def get_valuation_indicators(
                 "errors": []
             },
             "summary": {
-                "data_source": "tushare",
-                "symbol": ts_code_normalized,
+                "data_source": "alphavantage",
+                "symbol": symbol,
                 "include_market_comparison": include_market_comparison
             }
         }, ensure_ascii=False, indent=2, default=str)
@@ -501,20 +470,19 @@ def get_valuation_indicators(
 
 @tool
 def get_earnings_data(
-    ts_code: str,
+    symbol: str,
     limit: Optional[int] = 10
 ) -> str:
     """
-    获取业绩预告、快报数据
+    获取业绩数据（年度和季度）
     
-    此工具用于获取指定股票的业绩预告和业绩快报数据。
-    优先使用 AkShare 获取业绩数据，失败时使用 Tushare 作为备选。
+    此工具用于获取指定股票的年度和季度业绩数据。
+    使用 Alpha Vantage EARNINGS 接口获取数据。
     
     Args:
-        ts_code: 股票代码，支持以下格式：
-            - '000001' (6位数字)
-            - '000001.SZ' (深圳市场)
-            - '600000.SH' (上海市场)
+        symbol: 股票代码，yfinance格式：
+            - 美股：'AAPL', 'MSFT', 'GOOGL' 等
+            - A股：'000001.SZ' (深圳), '600519.SS' (上海)
         limit: 返回最近 N 条记录（默认 10 条）
     
     Returns:
@@ -532,164 +500,51 @@ def get_earnings_data(
         '{"success": true, "data": {...}, "summary": {...}}'
     """
     try:
-        try:
-            ak_provider = _get_akshare_provider()
-            result = ak_provider.get_earnings_data(ts_code, limit)
-            
-            forecast = result.get("forecast") if isinstance(result, dict) else None
-            express = result.get("express") if isinstance(result, dict) else None
-            
-            if (forecast and isinstance(forecast, list) and len(forecast) > limit):
-                forecast = forecast[:limit]
-            if (express and isinstance(express, list) and len(express) > limit):
-                express = express[:limit]
-            
-            if ("error" in result) or (forecast is None and express is None):
-                raise Exception(result.get("error") or "AkShare 业绩数据为空，尝试 fallback")
-            
-            # 核心字段压缩
-            def _trim_forecast(items):
-                if not items:
-                    return None
-                trimmed = []
-                for it in items[:limit]:
-                    trimmed.append({
-                        "ann_date": it.get("公告日期") or it.get("ann_date"),
-                        "end_date": it.get("报告时间") or it.get("end_date"),
-                        "summary": it.get("summary") or it.get("summary", ""),
-                        "type": it.get("type") or it.get("预测指标"),
-                        "p_change_min": it.get("p_change_min") or it.get("业绩变动幅度"),
-                        "p_change_max": it.get("p_change_max"),
-                    })
-                return trimmed
+        av_provider = _get_alphavantage_provider()
+        result = av_provider.get_earnings_data(symbol, limit)
+        
+        annual_earnings = result.get("annualEarnings", [])
+        quarterly_earnings = result.get("quarterlyEarnings", [])
+        
+        # 核心字段压缩
+        def _trim_earnings(items, is_annual: bool):
+            if not items:
+                return None
+            trimmed = []
+            for it in items[:limit]:
+                trimmed.append({
+                    "fiscalDateEnding": it.get("fiscalDateEnding"),
+                    "reportedEPS": it.get("reportedEPS"),
+                    "estimatedEPS": it.get("estimatedEPS"),
+                    "surprise": it.get("surprise"),
+                    "surprisePercentage": it.get("surprisePercentage"),
+                })
+            return trimmed
 
-            def _trim_express(items):
-                if not items:
-                    return None
-                trimmed = []
-                for it in items[:limit]:
-                    trimmed.append({
-                        "ann_date": it.get("公告日期") or it.get("ann_date"),
-                        "end_date": it.get("end_date"),
-                        "revenue": it.get("营业收入-营业收入") or it.get("revenue"),
-                        "n_income": it.get("净利润-净利润") or it.get("n_income"),
-                        "eps": it.get("每股收益") or it.get("diluted_eps") or it.get("eps"),
-                        "total_assets": it.get("total_assets"),
-                        "equity": it.get("total_hldr_eqy_exc_min_int"),
-                    })
-                return trimmed
+        annual_core = _trim_earnings(annual_earnings, is_annual=True)
+        quarterly_core = _trim_earnings(quarterly_earnings, is_annual=False)
 
-            forecast_core = _trim_forecast(forecast)
-            express_core = _trim_express(express)
-
-            return json.dumps({
-                "success": True,
-                "message": f"成功从 AkShare 获取股票 {ts_code} 的业绩数据",
-                "data": {
-                    "symbol": result.get("symbol", ts_code),
-                    "forecast": forecast,
-                    "express": express,
-                    "core": {
-                        "forecast": forecast_core,
-                        "express": express_core
-                    },
-                    "errors": result.get("errors", [])
+        return json.dumps({
+            "success": True,
+            "message": f"成功从 Alpha Vantage 获取股票 {symbol} 的业绩数据",
+            "data": {
+                "symbol": symbol,
+                "annualEarnings": annual_earnings,
+                "quarterlyEarnings": quarterly_earnings,
+                "core": {
+                    "annualEarnings": annual_core,
+                    "quarterlyEarnings": quarterly_core
                 },
-                "summary": {
-                    "data_source": "akshare",
-                    "symbol": result.get("symbol", ts_code),
-                    "limit": limit,
-                    "forecast_count": len(forecast) if forecast else 0,
-                    "express_count": len(express) if express else 0
-                }
-            }, ensure_ascii=False, indent=2, default=str)
-            
-        except Exception as ak_error:
-            # 直接使用 Tushare
-            try:
-                tushare_provider = _get_tushare_provider()
-                ts_code_normalized = normalize_stock_code(ts_code)
-                
-                forecast_df = tushare_provider.get_forecast(ts_code_normalized, limit=limit)
-                express_df = tushare_provider.get_express(ts_code_normalized, limit=limit)
-
-                forecast_preview, forecast_meta = _df_to_preview(forecast_df, limit=limit or 5)
-                express_preview, express_meta = _df_to_preview(express_df, limit=limit or 5)
-
-                forecast_core = None
-                express_core = None
-                if forecast_preview:
-                    forecast_core = []
-                    for it in forecast_preview:
-                        forecast_core.append({
-                            "ann_date": it.get("ann_date"),
-                            "end_date": it.get("end_date"),
-                            "type": it.get("type"),
-                            "p_change_min": it.get("p_change_min"),
-                            "p_change_max": it.get("p_change_max"),
-                            "summary": it.get("summary"),
-                        })
-                if express_preview:
-                    express_core = []
-                    for it in express_preview:
-                        express_core.append({
-                            "ann_date": it.get("ann_date"),
-                            "end_date": it.get("end_date"),
-                            "revenue": it.get("revenue"),
-                            "n_income": it.get("n_income"),
-                            "eps": it.get("diluted_eps") or it.get("eps"),
-                            "total_assets": it.get("total_assets"),
-                            "equity": it.get("total_hldr_eqy_exc_min_int"),
-                        })
-                
-                result = {
-                    "symbol": ts_code_normalized,
-                    "forecast": forecast_preview,
-                    "express": express_preview,
-                    "meta": {
-                        "forecast": forecast_meta,
-                        "express": express_meta
-                    },
-                    "core": {
-                        "forecast": forecast_core,
-                        "express": express_core
-                    },
-                    "errors": []
-                }
-                
-                if result["forecast"] is None:
-                    result["errors"].append("业绩预告数据为空")
-                if result["express"] is None:
-                    result["errors"].append("业绩快报数据为空")
-                
-                return json.dumps({
-                    "success": True,
-                    "message": f"成功从 Tushare 获取股票 {ts_code} 的业绩数据（AkShare 不可用）",
-                    "data": result,
-                    "summary": {
-                        "data_source": "tushare",
-                        "symbol": ts_code_normalized,
-                        "limit": limit,
-                        "forecast_count": forecast_meta.get("total_rows", 0),
-                        "express_count": express_meta.get("total_rows", 0)
-                    }
-                }, ensure_ascii=False, indent=2, default=str)
-                
-            except Exception as tushare_error:
-                return json.dumps({
-                    "success": False,
-                    "message": f"获取业绩数据失败。AkShare 错误: {str(ak_error)[:100]}。Tushare 错误: {str(tushare_error)[:100]}。",
-                    "data": {
-                        "symbol": ts_code,
-                        "forecast": None,
-                        "express": None,
-                        "errors": [str(ak_error), str(tushare_error)]
-                    },
-                    "summary": {
-                        "data_source": "error",
-                        "symbol": ts_code
-                    }
-                }, ensure_ascii=False, indent=2)
+                "errors": []
+            },
+            "summary": {
+                "data_source": "alphavantage",
+                "symbol": symbol,
+                "limit": limit,
+                "annual_count": len(annual_earnings) if annual_earnings else 0,
+                "quarterly_count": len(quarterly_earnings) if quarterly_earnings else 0
+            }
+        }, ensure_ascii=False, indent=2, default=str)
     
     except Exception as e:
         return json.dumps({

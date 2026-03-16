@@ -148,12 +148,15 @@ data/*.json
 data/*.pkl
 data/*.parquet
 cache/
+data_cache/
 logs/
 *.log
 
 # Configuration files (may contain sensitive API keys)
 config.json
 config.yaml
+config/*.yaml
+!config/*.yaml.example
 secrets.json
 .api_keys
 .env.local
@@ -172,6 +175,25 @@ temp/
 tmp/
 test_output/
 *.tmp
+test_output.log
+test_output*.log
+
+# Test directory and test files
+test/
+test_folder/
+test_*.py
+
+# Test output directories
+analyst_outputs/
+graph_outputs/
+test_results/
+
+# Test databases
+test.db
+*.db-journal
+
+# Sample data files
+test_db_export.json
 
 # Research output and reports
 research_output/
@@ -181,6 +203,7 @@ reports/
 
 # Database files
 *.db
+!demo_data.db
 *.sqlite
 *.sqlite3
 
@@ -196,6 +219,8 @@ market_data/
 
 # Backtest results
 backtest_results/
+backtest_results_*/
+backtest_results_archive/
 performance_reports/
 
 # Trading related files
@@ -210,6 +235,14 @@ yarn-debug.log*
 yarn-error.log*
 
 # Others
-CLAUDE.md
 **/*讨论内容.md
 data/
+.cursorrules
+
+# Trading system
+trading_sys/
+
+# Temporary directories
+need_to_add/
+
+docs_archive/

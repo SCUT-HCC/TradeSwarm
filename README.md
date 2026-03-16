@@ -1,116 +1,256 @@
 # TradeSwarm
 
-TradeSwarm是一个基于Agent的开源的炒股系统，通过多智能体协作架构实现智能投资分析和决策。 TradeSwarm采用多Agent架构，模拟专业投资团队的分析流程，整合基本面分析、市场分析、新闻分析、社交媒体分析等多个维度，为投资决策提供全面支持。系统基于LangChain框架构建，支持多种数据源接入，实现了模块化、可扩展的智能交易分析平台。
+基于多智能体架构的交易决策系统，采用 LangGraph 构建，支持连续自治运行、多智能体协作和长期记忆机制。
 
-## 主要思路与管线概览
+## 快速开始
 
-系统包含五条并行/协同的处理管线，围绕数据采集、规则清洗、智能体分析、存储与决策形成闭环：
+```bash
+# 1. 环境准备
+conda create -n TradeSwarm python=3.12
+conda activate TradeSwarm
+pip install -r requirements.txt
 
-- 数据采集与清洗：四条主题管线分别监听基础面、市场行情、新闻、社交媒体，每条管线的专属爬虫按设定频率抓取数据，经基于规则的清洗后进入对应分析链路。
-- 分析生成与存储：清洗后的数据送入 `tradingagents/agents/analyst` 下的四位 analyst，各自生成事件简报；原始数据写入 SQLite，简报向量化后写入 ChromaDB，二者同属统一的 prompt manager 以保持数据管理一致性。
-- 并行独立性：前四条管线互不干扰，状态独立运行（现有 state 定义仍需校准以完全反映这一并行特性）。
-- 轮循决策：第五条管线定时轮询 SQLite/ChromaDB 是否出现重要信息，若有触发 `tradingagents/agents/managers` 进行综合决策。
+# 2. 配置环境变量
+export DASHSCOPE_API_KEY="your-api-key"
+export ALPHA_VANTAGE_API_KEY="your-alpha-vantage-key"
 
-## 项目目录结构
+# 3. 创建配置文件 config/config.yaml
+
+# 4. 运行回测
+python run_single_symbol_backtest.py \
+    --symbol NVDA \
+    --start 2025-11-06 \
+    --end 2025-11-08 \
+    --cash 100000 \
+    --db memory.db \
+    --output backtest_results_nvda
+```
+
+## 完整系统流程图
+
+### 日级交易流程（完整）
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  回测驱动器 (run_single_symbol_backtest.py)                                  │
+│  按日期循环，每天依次执行以下步骤：                                           │
+└─────────────────────────────────────────────────────────────────────────────┘
+                    │
+                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  步骤 1: Analyst 节点（并行运行，图外执行）                                  │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐    │
+│  │ Market       │  │ News         │  │ Sentiment    │  │ Fundamentals │    │
+│  │ Analyst      │  │ Analyst      │  │ Analyst      │  │ Analyst      │    │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘    │
+│         │                  │                  │                  │            │
+│         └──────────────────┴──────────────────┴──────────────────┘            │
+│                                    │                                            │
+│                                    ▼                                            │
+│                         ┌──────────────────────┐                               │
+│                         │ analyst_reports 表   │                               │
+│                         │ (SQLite 数据库)      │                               │
+│                         └──────────────────────┘                               │
+└─────────────────────────────────────────────────────────────────────────────┘
+                    │
+                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  步骤 2: Pre-Open 决策图 (trading_graph.py) - LangGraph 内部                │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │ Summary 节点（串行）                                                  │  │
+│  │  market_summary → news_summary → sentiment_summary →                 │  │
+│  │  fundamentals_summary                                               │  │
+│  │  （从 analyst_reports 表读取，生成结构化摘要）                        │  │
+│  └───────────────────────────┬───────────────────────────────────────────┘  │
+│                              │                                                │
+│                              ▼                                                │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │ Research 子图（2 轮辩论）                                             │  │
+│  │  Bull Researcher (R1) → Bear Researcher (R1) →                      │  │
+│  │  Bull Researcher (R2) → Bear Researcher (R2) →                      │  │
+│  │  Research Manager                                                    │  │
+│  │  （整合 Analyst 摘要 + 多空辩论，生成 investment_plan）             │  │
+│  └───────────────────────────┬───────────────────────────────────────────┘  │
+│                              │                                                │
+│                              ▼                                                │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │ Trader 节点                                                           │  │
+│  │  （根据 Research Plan，生成交易方向和止盈止损规则）                   │  │
+│  └───────────────────────────┬───────────────────────────────────────────┘  │
+│                              │                                                │
+│                              ▼                                                │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │ Strategy Selector 节点                                                │  │
+│  │  （判断市场状态 market_regime，选择交易策略）                          │  │
+│  └───────────────────────────┬───────────────────────────────────────────┘  │
+│                              │                                                │
+│                              ▼                                                │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │ Risk 子图（2 轮辩论）                                                 │  │
+│  │  Aggressive (R1) → Neutral (R1) → Conservative (R1) →                │  │
+│  │  Aggressive (R2) → Neutral (R2) → Conservative (R2) →               │  │
+│  │  Risk Manager                                                        │  │
+│  │  （基于 Research Plan + 风险辩论，生成 final_trade_decision）        │  │
+│  └───────────────────────────┬───────────────────────────────────────────┘  │
+│                              │                                                │
+│                              ▼                                                │
+│  输出状态 (AgentState):                                                      │
+│  - trader_investment_plan: 交易计划（BUY/SELL/HOLD + 止盈止损）            │
+│  - strategy_selection: 策略选择（market_regime + selected_strategy）        │
+│  - risk_summary: 风险决策（final_trade_decision + 仓位限制）              │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────────┘
+                    │
+                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  步骤 3: Market Open 节点（图外执行）                                        │
+│  - 读取 Pre-Open 的决策结果（risk_summary, strategy_selection）              │
+│  - 检查风险决策（如果 final_decision == "HOLD"，不执行交易）                 │
+│  - 执行策略（execute_strategy），生成交易信号                                │
+│  - 获取 T+1 日开盘价（实际执行价格）                                        │
+│  - 调用 portfolio_manager.execute_buy/sell() 执行交易                        │
+│  - 更新仓位状态（每天最多执行一次交易）                                      │
+└─────────────────────────────────────────────────────────────────────────────┘
+                    │
+                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  步骤 4: Post Close 节点（图外执行）                                         │
+│  - 更新所有持仓的当前价格（使用收盘价）                                       │
+│  - 计算单日收益率（相对于前一天的总资产）                                     │
+│  - 计算最大回撤（基于持仓的当前价格和建仓价格）                               │
+│  - 更新组合状态（PortfolioManager）                                          │
+└─────────────────────────────────────────────────────────────────────────────┘
+                    │
+                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  步骤 5: Daily Summary 保存                                                 │
+│  - 从 Pre-Open 结果提取: market_regime, selected_strategy,                 │
+│    expected_behavior                                                       │
+│  - 从 Post Close 结果提取: actual_return, actual_max_drawdown              │
+│  - 保存到 daily_trading_summaries 表（SQLite）                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+                    │
+                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  步骤 6: History Maintainer 节点（图外执行）                                │
+│  - 为 4 类 Analyst 生成 7 日滚动摘要                                        │
+│  - 保存到 analyst_summaries 表（SQLite）                                   │
+│  - 供下一交易日使用（作为 history_report 输入到 Pre-Open 图）              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 架构设计说明
+
+**图内 vs 图外**：
+- **Pre-Open 图（LangGraph）**：纯决策逻辑，使用 LangGraph 管理复杂的状态流转
+- **Market Open / Post Close（Python 函数）**：执行和结算逻辑，需要直接操作 `PortfolioManager`，不适合放在图中
+- **状态传递**：Pre-Open 图通过 `AgentState` 输出决策，Market Open 通过 `state.get()` 读取决策
+
+**数据流**：
+```
+Analyst 报告 → analyst_reports 表
+    ↓
+Pre-Open 图读取 → 生成决策（AgentState）
+    ↓
+Market Open 执行交易 → PortfolioManager
+    ↓
+Post Close 计算收益 → daily_trading_summaries 表
+    ↓
+History Maintainer → analyst_summaries 表（7 日滚动摘要）→ 下一交易日使用
+```
+
+### 周期级流程（周/月）
+
+```text
+周期开始
+    │
+    ▼
+┌─────────────────┐
+│  选股与再平衡    │  ← StockSelector 选股 + PortfolioManager 调仓
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  每日交易循环    │  ← 对每个选中标的执行 Pre-Open → Market Open → Post Close
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Reflector      │  ← 周期结束：总结错误模式、成功模式、策略适用条件
+│  Agent          │    更新长期记忆（ChromaDB）
+└─────────────────┘
+```
+
+## 核心模块
+
+| 模块 | 说明 | 位置 |
+|------|------|------|
+| **Analyst** | 4 类分析师（技术/新闻/情绪/基本面），图外并行执行 | `tradingagents/agents/analysts/` |
+| **Pre-Open 图** | LangGraph 决策流程（Summary → Research → Trader → Strategy Selector → Risk） | `tradingagents/graph/trading_graph.py` |
+| **Market Open** | 交易执行逻辑，读取决策并执行交易 | `tradingagents/agents/market_open/node.py` |
+| **Post Close** | 收益计算逻辑，更新持仓和计算收益 | `tradingagents/agents/post_close/node.py` |
+| **History Maintainer** | 维护 7 日滚动摘要 | `tradingagents/agents/post_close/history_maintainer.py` |
+| **Memory** | SQLite（结构化数据）+ ChromaDB（向量记忆） | `tradingagents/agents/utils/memory_db_helper.py` |
+| **Portfolio** | 组合管理、交易执行、再平衡 | `tradingagents/core/portfolio/portfolio_manager.py` |
+| **Stock Selector** | 多因子选股（IC 动态权重/市场状态权重） | `tradingagents/core/selection/stock_selector.py` |
+| **Reflector** | 周期反思，总结交易经验 | `tradingagents/agents/post_close/reflector.py` |
+
+## 技术栈
+
+- **Python 3.12+**
+- **LangGraph 1.2.0** + LangChain：工作流编排
+- **SQLite** + **ChromaDB**：数据持久化
+- **yfinance** + **Alpha Vantage**：数据源
+
+## 运行脚本
+
+```bash
+# 单标的回测
+python run_single_symbol_backtest.py --symbol NVDA --start 2025-11-06 --end 2025-11-08
+
+# 多标的、多周期回测
+python run_multi_symbol_backtest.py --start_date 2024-01-01 --end_date 2024-01-31 --cycle_type monthly
+
+# 周期反思
+python run_reflector_cycle.py --cycle_type weekly --start_date 2024-01-01 --end_date 2024-01-07
+```
+
+## 项目结构
 
 ```
 TradeSwarm/
-├── config/                     # 配置文件目录
-│   └── config.yaml            # 系统配置文件（LLM配置、数据源配置等）
-├── data_sources/              # 数据源模块
-│   ├── akshare_provider.py    # AKShare数据源提供者
-│   └── tushare_provider.py    # Tushare数据源提供者
-├── docs/                      # 文档目录
-├── momory/                    # 记忆模块（注：目录名可能需要修正为memory）
-│   └── financial_situation_memory.py  # 财务状况记忆管理
-├── tradingagents/             # 交易智能体模块
-│   └── agents/
-│       ├── analyst/           # 分析师智能体
-│       │   ├── fundamentals_analyst/  # 基本面分析师
-│       │   │   ├── agent.py          # 智能体实现
-│       │   │   ├── state.py          # 状态管理
-│       │   │   └── prompt.j2         # 提示词模板
-│       │   ├── market_analyst/       # 市场分析师
-│       │   ├── news_analyst/         # 新闻分析师
-│       │   └── social_media_analyst/ # 社交媒体分析师
-│       └── managers/         # 管理类智能体
-│           ├── research_manager/     # 研究管理器
-│           └── risk_manager/         # 风险管理器
-└── utils/                     # 工具模块
-    ├── config_loader.py       # 配置加载器
-    ├── data_utils.py          # 数据处理工具
-    └── llm_utils.py           # LLM工具函数
+├── tradingagents/          # 核心代码
+│   ├── agents/            # Agent 实现
+│   ├── graph/            # LangGraph 图定义
+│   └── core/             # 核心模块（portfolio, selection 等）
+├── datasources/          # 数据源模块
+├── config/               # 配置文件
+├── docs/                 # 文档
+├── run_*.py             # 运行脚本
+└── requirements.txt     # 依赖
 ```
 
-## 核心架构
+## 关键代码位置
 
-## 项目技术选型
+| 功能 | 文件路径 | 说明 |
+|------|---------|------|
+| **回测驱动器** | `run_single_symbol_backtest.py` | 单标的多日回测，包含完整日级流程 |
+| **Pre-Open 图定义** | `tradingagents/graph/trading_graph.py` | 主交易决策图（LangGraph） |
+| **Research 子图** | `tradingagents/graph/subgraphs/research_subgraph.py` | Bull/Bear 辩论子图 |
+| **Risk 子图** | `tradingagents/graph/subgraphs/risk_subgraph.py` | 风险辩论子图 |
+| **Market Open 节点** | `tradingagents/agents/market_open/node.py` | 交易执行逻辑 |
+| **Post Close 节点** | `tradingagents/agents/post_close/node.py` | 收益计算逻辑 |
+| **组合管理** | `tradingagents/core/portfolio/portfolio_manager.py` | 持仓、现金、交易管理 |
+| **数据适配器** | `tradingagents/core/data_adapter.py` | 数据源统一接口 |
+| **数据库操作** | `tradingagents/agents/utils/memory_db_helper.py` | SQLite 数据库操作 |
 
-### 核心技术栈
-- **Python 3.12**: 主要编程语言，提供现代化的语言特性和性能优化
-- **LangChain 1.2.0**: 大语言模型应用开发框架，提供Agent构建和工具编排能力
-- **OpenAI 2.12.0**: LLM接口支持，兼容多种大语言模型API
-- **ChromaDB 1.3.7**: 向量数据库，用于知识检索和语义搜索
-- **AKShare 1.17.96**: 开源金融数据接口库
-- **Tushare 1.4.24**: 专业金融数据接口SDK
+## 注意事项
 
-### 数据源集成
-- **Tushare Pro**: 专业的金融数据接口，提供全面的股票、基金、期货数据
-- **AKShare**: 开源的金融数据接口，支持多种数据源和实时数据获取
+1. **API 限制**：Alpha Vantage 免费版 5 次/分钟，500 次/天，系统已实现多 Key 轮询和缓存
+2. **数据库**：首次运行自动创建 SQLite 数据库（`memory.db`）
+3. **配置**：需要创建 `config/config.yaml`，参考模板或 README 中的配置示例
+4. **图内 vs 图外**：Pre-Open 图只包含决策逻辑，Market Open 和 Post Close 在图外执行
 
-### 数据能力明细
+---
 
-| 指标名称 | 数据源 | 对应函数 | 简要说明 |
-| :--- | :--- | :--- | :--- |
-| **日线行情** | Tushare | `get_daily` | 获取历史日线数据（开高低收、成交量）|
-| **每日指标** | Tushare | `get_daily_basic` | 获取每日收盘后的基本面指标（PE、PB、换手率等）|
-| **实时盘口** | Tushare | `get_realtime_orderbook` | 获取实时五档买卖盘口及最新价 |
-| **股票列表** | Tushare | `get_stock_basic` | 获取全市场股票基础信息列表 |
-| **公司信息** | Tushare | `get_company_info` | 获取单个公司的详细背景、主营业务等 |
-| **利润表** | Tushare | `get_income` | 获取季度/年度利润表数据 |
-| **资产负债表** | Tushare | `get_balancesheet` | 获取季度/年度资产负债表数据 |
-| **现金流量表** | Tushare | `get_cashflow` | 获取季度/年度现金流量表数据 |
-| **财务指标** | Tushare | `get_fina_indicator` | 获取 ROE、ROA、毛利率等计算后指标 |
-| **业绩预告** | Tushare | `get_forecast` | 获取上市公司业绩预告 |
-| **业绩快报** | Tushare | `get_express` | 获取上市公司业绩快报 |
-| **实时估值** | AkShare | `get_valuation_indicators` | 获取盘中实时的 PE/PB 估值数据 |
-| **宏观新闻** | AkShare | `get_macro_news` | 获取央视/百度财经等宏观新闻资讯 |
-| **北向资金** | AkShare | `get_northbound_money_flow` | 获取沪深港通北向资金实时流向 |
-| **全球指数** | AkShare | `get_global_indices_performance` | 获取美股、港股等全球核心指数涨跌幅 |
-| **实时汇率** | AkShare | `get_currency_exchange_rate` | 获取美元兑人民币实时汇率 (USD/CNY) |
-| **(备用)财务报表** | AkShare | `get_financial_statements` | 作为 Tushare 的备用，包含三大报表 |
-| **(备用)公司信息** | AkShare | `get_company_info` | 作为 Tushare 的备用 |
-
-## 使用方式
-
-```bash
-# 安装环境
-conda create -n TradeSwarm python=3.12
-pip install -r requirements.txt
-
-# 设置环境变量
-cp -r .env.example .env
-```
-
-## 开发规范
-
-本项目遵循研究型代码开发规范，注重代码质量、文档完整性和系统可扩展性，所有代码均通过严格的语法验证和类型检查。
-
-## 最近更新
-
-### Agent 的改动简述：
-- **数据源**：重构 AkShare/Tushare 为工具库（封装成provider，避免开一堆文件），新闻拆分微观/宏观，统一 Markdown 输出。
-- **基本面**：新增公司信息、报表、指标、估值、业绩工具，AkShare 优先、Tushare 兜底，输出含 core/preview/meta，便于 LLM 直接使用。
-- **分析师**：在cx的版本基础上 调整了fundamentals_analyst 角色提示与工具清单，中文汇报。
-- **social_media**：等cz搞定媒体数据源之后我接入
-
-### TODO
-- [ ] 加入memory
-- [ ] state传递内容设计
-
-### 运行示例
-```bash
-python -m tradingagents.agents.analysts.fundamentals_analyst
-```
-
-**注意**：我们之后的prompt最好用中文写
+**最后更新**: 2026-02-13

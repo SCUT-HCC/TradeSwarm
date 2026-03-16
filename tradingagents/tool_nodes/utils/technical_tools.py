@@ -4,21 +4,21 @@ import pandas as pd
 import numpy as np
 from typing import List, Optional, Dict, Any
 from langchain_core.tools import tool
-from datasources.data_sources.tushare_provider import TushareProvider
+from datasources.data_sources.yfinance_provider import YFinanceProvider
 from utils.data_utils import normalize_stock_code, format_date
 from utils.config_loader import load_config
 
 
-# 全局 Tushare Provider 实例（懒加载）
-_provider: Optional[TushareProvider] = None
+# 全局 YFinance Provider 实例（懒加载）
+_provider: Optional[YFinanceProvider] = None
 
 
-def _get_provider() -> TushareProvider:
-    """获取 Tushare Provider 实例（单例模式）"""
+def _get_provider() -> YFinanceProvider:
+    """获取 YFinance Provider 实例（单例模式）"""
     global _provider
     if _provider is None:
         config = load_config()
-        _provider = TushareProvider(config)
+        _provider = YFinanceProvider(config)
     return _provider
 
 
@@ -357,10 +357,14 @@ def _calculate_indicators(
         包含原始数据和技术指标的 DataFrame
     """
     result_df = df.copy()
-    close = df['close']
-    high = df['high'] if 'high' in df.columns else close
-    low = df['low'] if 'low' in df.columns else close
-    volume = df['vol'] if 'vol' in df.columns else pd.Series([0] * len(df), index=df.index)
+    # yfinance 使用首字母大写的列名
+    close = df['Close'] if 'Close' in df.columns else df['close'] if 'close' in df.columns else None
+    high = df['High'] if 'High' in df.columns else (df['high'] if 'high' in df.columns else close)
+    low = df['Low'] if 'Low' in df.columns else (df['low'] if 'low' in df.columns else close)
+    volume = df['Volume'] if 'Volume' in df.columns else (df['vol'] if 'vol' in df.columns else pd.Series([0] * len(df), index=df.index))
+    
+    if close is None:
+        raise ValueError("数据中缺少收盘价列（Close 或 close）")
     
     for indicator in indicators:
         indicator = indicator.upper()
@@ -480,24 +484,23 @@ def _calculate_indicators(
 
 @tool
 def get_indicators(
-    ts_code: str,
+    symbol: str,
     indicators: str,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     period: Optional[int] = None
 ) -> str:
     """
-    获取 A 股股票的技术指标数据
+    获取股票的技术指标数据（使用 yfinance，主要支持美股）
     
     此工具用于计算指定股票的技术指标，支持多种常用技术指标的计算，包括移动平均线、
     相对强弱指标、MACD、布林带等。工具会先获取股票的基础数据，然后计算相应的技术指标。
     
     Args:
-        ts_code: 股票代码，支持以下格式：
-            - '000001' (6位数字，会自动识别市场)
-            - '000001.SZ' (深圳市场)
-            - '600000.SH' (上海市场)
-            示例：'000001' 或 '600000'
+        symbol: 股票代码，yfinance格式：
+            - 美股：'AAPL', 'MSFT', 'GOOGL' 等
+            - A股：'000001.SZ' (深圳), '600519.SS' (上海)
+            示例：'AAPL' 或 '000001.SZ' 或 '600519.SS'
         indicators: 要计算的指标，多个指标用逗号分隔。支持的指标：
             - 'MA': 移动平均线（默认计算 5, 10, 20, 30, 60 日均线）
             - 'EMA': 指数移动平均线（默认计算 12, 26 日均线）
@@ -565,12 +568,12 @@ def get_indicators(
             end_date = end_date_obj.strftime('%Y%m%d')
         
         # 获取基础数据
-        df = provider.get_daily(ts_code, start_date, end_date)
+        df = provider.get_daily(symbol, start_date, end_date)
         
         if df.empty:
             return json.dumps({
                 "success": False,
-                "message": f"未找到股票 {ts_code} 在指定期间的数据",
+                "message": f"未找到股票 {symbol} 在指定期间的数据",
                 "data": [],
                 "indicators": [],
                 "summary": {}
@@ -582,24 +585,41 @@ def get_indicators(
         # 计算技术指标
         result_df = _calculate_indicators(df, indicator_list)
         
+        # 重置索引，将日期作为列（yfinance格式）
+        if isinstance(result_df.index, pd.DatetimeIndex):
+            result_df = result_df.reset_index()
+            result_df['Date'] = result_df['Date'].dt.strftime('%Y-%m-%d')
+        
         # 转换为字典列表，并将 NaN 值转换为 None（JSON 中的 null）
         data_list = result_df.replace({np.nan: None}).to_dict('records')
+        
+        # 提取已计算的指标名称列表（展开复合指标）
+        indicators_calculated = []
+        base_fields = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume',
+                      'ts_code', 'trade_date', 'open', 'high', 'low', 'close', 
+                      'pre_close', 'change', 'pct_chg', 'vol', 'amount']
+        
+        if data_list:
+            latest = data_list[-1]
+            # 从最新数据中提取所有指标字段名
+            for key in latest.keys():
+                if key not in base_fields:
+                    indicators_calculated.append(key)
         
         # 提取最新指标值作为摘要
         summary = {
             "total_records": len(data_list),
             "date_range": {
-                "start": data_list[0]['trade_date'] if data_list else None,
-                "end": data_list[-1]['trade_date'] if data_list else None
+                "start": data_list[0].get('Date') or data_list[0].get('trade_date') if data_list else None,
+                "end": data_list[-1].get('Date') or data_list[-1].get('trade_date') if data_list else None
             },
+            "indicators_calculated": indicators_calculated,  # 添加已计算的指标列表
             "latest_indicators": {}
         }
         
         if data_list:
             latest = data_list[-1]
             # 提取所有指标字段（排除基础数据字段）
-            base_fields = ['ts_code', 'trade_date', 'open', 'high', 'low', 'close', 
-                          'pre_close', 'change', 'pct_chg', 'vol', 'amount']
             for key, value in latest.items():
                 if key not in base_fields and value is not None:
                     summary["latest_indicators"][key] = float(value) if isinstance(value, (int, float)) else str(value)

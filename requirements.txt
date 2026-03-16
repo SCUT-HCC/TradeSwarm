@@ -98,7 +98,9 @@ tabulate==0.9.0
 tenacity==9.1.2
 tokenizers==0.22.1
 tqdm==4.67.1
-tushare==1.4.24
+yfinance>=0.2.0
+# tushare==1.4.24  # 已移除，main分支使用yfinance，main-cn分支保留
+jinja2>=3.1.0
 typer==0.21.0
 typer-slim==0.21.0
 typing-inspection==0.4.2
